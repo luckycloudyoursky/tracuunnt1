@@ -18,6 +18,7 @@ if str(ROOT_DIR) not in sys.path:
 import tra_cuu_thue_batch_excel as batch
 
 APP_TITLE = "Tra Cuu Thue Batch"
+APP_BUILD = "build-20260413-session-init-v2"
 DEFAULT_OUTPUT_NAME = "ket_qua_tra_cuu_thue.xlsx"
 DISPLAY_COLUMNS = ["STT", "MST", "Ten nguoi nop thue", "Dia chi", "Co quan thue quan ly", "Trang thai MST"]
 
@@ -136,6 +137,7 @@ def main() -> None:
     st.set_page_config(page_title=APP_TITLE, page_icon="TT", layout="wide")
     st.title(APP_TITLE)
     with st.sidebar:
+        st.caption(APP_BUILD)
         st.header("Options")
         retries = st.number_input("CAPTCHA retries", min_value=1, max_value=100, value=15, step=1)
         delay = st.number_input("Delay between MST", min_value=0.0, value=1.0, step=0.5)
