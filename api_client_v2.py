@@ -6,6 +6,7 @@ from __future__ import annotations
 import logging
 import os
 import shutil
+import subprocess
 import sys
 import time
 from dataclasses import dataclass
@@ -20,7 +21,6 @@ except ImportError as exc:
     print(f"Required dependency missing: {exc}")
     print("Install with: pip install -r requirements.txt")
     sys.exit(1)
-
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
@@ -53,6 +53,23 @@ def _resolve_chromium_executable() -> Optional[str]:
     return None
 
 
+def _install_playwright_chromium_once() -> None:
+    marker = "/tmp/tracuunnt_playwright_chromium_installed"
+    if os.name == "nt" or os.path.exists(marker):
+        return
+    logger.info("Installing Playwright Chromium browser")
+    subprocess.run(
+        [sys.executable, "-m", "playwright", "install", "chromium"],
+        check=False,
+        timeout=180,
+    )
+    try:
+        with open(marker, "w", encoding="utf-8") as handle:
+            handle.write("ok")
+    except OSError:
+        pass
+
+
 @dataclass
 class TaxPayerInfo:
     tax_id: str
@@ -79,19 +96,25 @@ class GdtTaxLookupClientV2:
     def __exit__(self, exc_type, exc_val, exc_tb):
         self.close()
 
-    def _start_playwright(self) -> None:
-        if self.pw:
-            return
-
-        self.pw = sync_playwright().start()
+    def _launch_browser(self):
         launch_options = {"headless": True}
         chromium_path = _resolve_chromium_executable()
         if chromium_path:
             launch_options["executable_path"] = chromium_path
         if os.name != "nt":
             launch_options["args"] = ["--no-sandbox", "--disable-dev-shm-usage"]
+        return self.pw.chromium.launch(**launch_options)
 
-        self.browser = self.pw.chromium.launch(**launch_options)
+    def _start_playwright(self) -> None:
+        if self.pw:
+            return
+        self.pw = sync_playwright().start()
+        try:
+            self.browser = self._launch_browser()
+        except Exception as exc:
+            logger.warning("Initial Chromium launch failed: %s", exc)
+            _install_playwright_chromium_once()
+            self.browser = self._launch_browser()
         self.context = self.browser.new_context(user_agent=USER_AGENT)
         self.page = self.context.new_page()
         Stealth().apply_stealth_sync(self.page)
@@ -137,12 +160,9 @@ class GdtTaxLookupClientV2:
             table = soup.find("table", class_="table_gdt") or soup.find("table")
         if table is None:
             return taxpayers
-
         for row in table.find_all("tr"):
             cols = row.find_all("td")
-            if len(cols) < 6:
-                continue
-            if not cols[0].get_text(strip=True).isdigit():
+            if len(cols) < 6 or not cols[0].get_text(strip=True).isdigit():
                 continue
             tax_id = cols[1].get_text(strip=True)
             taxpayers.append(
@@ -157,26 +177,18 @@ class GdtTaxLookupClientV2:
             )
         return taxpayers
 
-    def lookup_tax_id(
-        self,
-        tax_id: str,
-        captcha: str,
-        save_html_path: Optional[str] = "last_search_result.html",
-    ) -> List[TaxPayerInfo]:
+    def lookup_tax_id(self, tax_id: str, captcha: str, save_html_path: Optional[str] = "last_search_result.html") -> List[TaxPayerInfo]:
         if not tax_id or not captcha:
             raise ValueError("Tax ID and CAPTCHA are required")
-
         logger.info("Submitting lookup for MST: %s", tax_id)
         self.page.fill('input[name="mst"]', tax_id.strip())
         self.page.fill('input[name="captcha"]', captcha.strip())
         self.page.locator("input.subBtn").click()
         time.sleep(3)
         self.last_html = self.page.content()
-
         if save_html_path:
             with open(save_html_path, "w", encoding="utf-8") as handle:
                 handle.write(self.last_html)
-
         return self._parse_response_bs4(self.last_html)
 
     def close(self) -> None:
