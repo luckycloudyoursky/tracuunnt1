@@ -35,17 +35,21 @@ USER_AGENT = (
 )
 
 
+def _is_streamlit_cloud() -> bool:
+    current_file = os.path.abspath(__file__).replace("\\", "/")
+    return os.name != "nt" and (
+        current_file.startswith("/mount/src/")
+        or os.environ.get("HOME") == "/home/appuser"
+    )
+
+
 def _prefer_requests_first() -> bool:
     mode = os.environ.get("GDT_LOOKUP_MODE", "").strip().lower()
     if mode in {"requests", "http"}:
         return True
     if mode in {"playwright", "browser"}:
         return False
-    current_file = os.path.abspath(__file__).replace("\\", "/")
-    return os.name != "nt" and (
-        current_file.startswith("/mount/src/")
-        or os.environ.get("HOME") == "/home/appuser"
-    )
+    return _is_streamlit_cloud()
 
 
 def _resolve_chromium_executable() -> Optional[str]:
@@ -140,6 +144,14 @@ class GdtTaxLookupClientV2:
             logger.info("Using requests-first mode for GDT session")
             if self._init_requests_session():
                 return True
+            if _is_streamlit_cloud():
+                self.last_error = (
+                    f"{self.last_error}; Streamlit Cloud cannot connect to "
+                    "tracuunnt.gdt.gov.vn:443 from this container. Use a host/network "
+                    "that can reach GDT, for example a Vietnam/Asia VPS or a local tunnel."
+                )
+                logger.error(self.last_error)
+                return False
             logger.warning("Requests-first mode failed, trying Playwright fallback")
         try:
             self._use_requests_fallback = False
