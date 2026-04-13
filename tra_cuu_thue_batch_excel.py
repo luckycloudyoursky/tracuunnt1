@@ -161,9 +161,13 @@ def taxpayer_to_result(input_mst: str, taxpayer: Any, count: int, source_url: st
 def lookup_mst_with_client(client: Any, mst: str, retries: int, source_url: str, save_html_dir: Optional[str] = None) -> Dict[str, str]:
     try:
         if not client.init_session():
-            return {"input_mst": mst, "mst": mst, "error": "Could not initialize GDT session", "source_url": source_url}
+            detail = getattr(client, "last_error", "") or ""
+            message = "Could not initialize GDT session"
+            if detail:
+                message = f"{message}: {detail}"
+            return {"input_mst": mst, "mst": mst, "error": message, "source_url": source_url}
     except Exception as exc:
-        return {"input_mst": mst, "mst": mst, "error": f"Could not initialize GDT session: {exc}", "source_url": source_url}
+        return {"input_mst": mst, "mst": mst, "error": f"Could not initialize GDT session: {type(exc).__name__}: {exc}", "source_url": source_url}
     for attempt in range(1, retries + 1):
         try:
             captcha = client.auto_solve_captcha()

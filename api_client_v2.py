@@ -76,6 +76,7 @@ class GdtTaxLookupClientV2:
         self.context = None
         self.page = None
         self.last_html: Optional[str] = None
+        self.last_error: Optional[str] = None
         self._ocr = None
 
     def __enter__(self):
@@ -104,21 +105,34 @@ class GdtTaxLookupClientV2:
             logger.warning("Initial Chromium launch failed: %s", exc)
             _install_playwright_chromium_once()
             self.browser = self._launch_browser()
-        self.context = self.browser.new_context(user_agent=USER_AGENT)
+        self.context = self.browser.new_context(user_agent=USER_AGENT, ignore_https_errors=True)
+        self.context.set_default_timeout(45000)
+        self.context.set_default_navigation_timeout(60000)
         self.page = self.context.new_page()
         Stealth().apply_stealth_sync(self.page)
         logger.info("Playwright started with stealth enabled")
 
     def init_session(self) -> bool:
         try:
+            self.last_error = None
             self._start_playwright()
             logger.info("Navigating to %s", TAX_LOOKUP_URL)
-            self.page.goto(TAX_LOOKUP_URL, wait_until="networkidle", timeout=60000)
+            self.page.goto(TAX_LOOKUP_URL, wait_until="domcontentloaded", timeout=45000)
             time.sleep(4)
+            self.page.locator('input[name="mst"]').wait_for(state="attached", timeout=15000)
+            self.page.locator('img[src*="captcha.png"]').wait_for(state="attached", timeout=15000)
             self.last_html = self.page.content()
             return True
         except Exception as exc:
-            logger.error("Failed to initialize session: %s", exc)
+            try:
+                self.last_html = self.page.content() if self.page else None
+            except Exception:
+                self.last_html = None
+            current_url = self.page.url if self.page else ""
+            self.last_error = f"{type(exc).__name__}: {exc}"
+            if current_url:
+                self.last_error = f"{self.last_error} (url={current_url})"
+            logger.error("Failed to initialize session: %s", self.last_error)
             return False
 
     def get_captcha(self, save_path: Optional[str] = None) -> bytes:

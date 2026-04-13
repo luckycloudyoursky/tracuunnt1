@@ -105,8 +105,8 @@ def run_batch_lookup(
     batch.set_log_level(debug)
     handler = StreamlitLogHandler(log)
     handler.setFormatter(logging.Formatter("%(asctime)s - %(levelname)s - %(message)s"))
-    if debug:
-        logging.getLogger().addHandler(handler)
+    handler.setLevel(logging.INFO if debug else logging.ERROR)
+    logging.getLogger().addHandler(handler)
     results: List[Dict[str, str]] = []
     try:
         with contextlib.redirect_stdout(log), contextlib.redirect_stderr(log):
@@ -128,8 +128,7 @@ def run_batch_lookup(
                         import time
                         time.sleep(delay)
     finally:
-        if debug:
-            logging.getLogger().removeHandler(handler)
+        logging.getLogger().removeHandler(handler)
     return results
 
 
