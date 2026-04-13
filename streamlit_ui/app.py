@@ -21,7 +21,7 @@ import tra_cuu_thue_batch_excel as batch
 batch = importlib.reload(batch)
 
 APP_TITLE = "Tra Cuu Thue Batch"
-APP_BUILD = "build-20260413-force-reload-v3"
+APP_BUILD = "build-20260414-requests-fallback-v4"
 DEFAULT_OUTPUT_NAME = "ket_qua_tra_cuu_thue.xlsx"
 DISPLAY_COLUMNS = ["STT", "MST", "Ten nguoi nop thue", "Dia chi", "Co quan thue quan ly", "Trang thai MST"]
 

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""GDT taxpayer lookup client using Playwright + OCR."""
+"""GDT taxpayer lookup client using Playwright, with a requests fallback for cloud hosts."""
 
 from __future__ import annotations
 
@@ -14,6 +14,7 @@ from typing import List, Optional
 
 try:
     import ddddocr
+    import requests
     from bs4 import BeautifulSoup
     from playwright.sync_api import sync_playwright
     from playwright_stealth.stealth import Stealth
@@ -32,6 +33,19 @@ USER_AGENT = (
     "AppleWebKit/537.36 (KHTML, like Gecko) "
     "Chrome/133.0.0.0 Safari/537.36"
 )
+
+
+def _prefer_requests_first() -> bool:
+    mode = os.environ.get("GDT_LOOKUP_MODE", "").strip().lower()
+    if mode in {"requests", "http"}:
+        return True
+    if mode in {"playwright", "browser"}:
+        return False
+    current_file = os.path.abspath(__file__).replace("\\", "/")
+    return os.name != "nt" and (
+        current_file.startswith("/mount/src/")
+        or os.environ.get("HOME") == "/home/appuser"
+    )
 
 
 def _resolve_chromium_executable() -> Optional[str]:
@@ -59,6 +73,12 @@ def _install_playwright_chromium_once() -> None:
         pass
 
 
+def _decode_response(response: requests.Response) -> str:
+    if not response.encoding or response.encoding.lower() == "iso-8859-1":
+        response.encoding = "utf-8"
+    return response.text
+
+
 @dataclass
 class TaxPayerInfo:
     tax_id: str
@@ -78,9 +98,12 @@ class GdtTaxLookupClientV2:
         self.last_html: Optional[str] = None
         self.last_error: Optional[str] = None
         self._ocr = None
+        self._requests_session: Optional[requests.Session] = None
+        self._use_requests_fallback = False
 
     def __enter__(self):
-        self._start_playwright()
+        if not _prefer_requests_first():
+            self._start_playwright()
         return self
 
     def __exit__(self, exc_type, exc_val, exc_tb):
@@ -113,11 +136,17 @@ class GdtTaxLookupClientV2:
         logger.info("Playwright started with stealth enabled")
 
     def init_session(self) -> bool:
+        if _prefer_requests_first():
+            logger.info("Using requests-first mode for GDT session")
+            if self._init_requests_session():
+                return True
+            logger.warning("Requests-first mode failed, trying Playwright fallback")
         try:
+            self._use_requests_fallback = False
             self.last_error = None
             self._start_playwright()
             logger.info("Navigating to %s", TAX_LOOKUP_URL)
-            self.page.goto(TAX_LOOKUP_URL, wait_until="domcontentloaded", timeout=45000)
+            self.page.goto(TAX_LOOKUP_URL, wait_until="domcontentloaded", timeout=15000)
             time.sleep(4)
             self.page.locator('input[name="mst"]').wait_for(state="attached", timeout=15000)
             self.page.locator('img[src*="captcha.png"]').wait_for(state="attached", timeout=15000)
@@ -132,13 +161,59 @@ class GdtTaxLookupClientV2:
             self.last_error = f"{type(exc).__name__}: {exc}"
             if current_url:
                 self.last_error = f"{self.last_error} (url={current_url})"
-            logger.error("Failed to initialize session: %s", self.last_error)
+            logger.error("Failed to initialize Playwright session: %s", self.last_error)
+            logger.warning("Falling back to requests-based GDT session")
+            return self._init_requests_session(self.last_error)
+
+    def _init_requests_session(self, previous_error: Optional[str] = None) -> bool:
+        try:
+            if self._requests_session:
+                self._requests_session.close()
+            self._use_requests_fallback = True
+            self._requests_session = requests.Session()
+            self._requests_session.headers.update({
+                "User-Agent": USER_AGENT,
+                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+                "Accept-Language": "vi-VN,vi;q=0.9,en-US;q=0.8,en;q=0.7",
+                "Referer": TAX_LOOKUP_URL,
+            })
+            response = self._requests_session.get(TAX_LOOKUP_URL, timeout=(8, 20))
+            response.raise_for_status()
+            self.last_html = _decode_response(response)
+            if 'name="mst"' not in self.last_html or "captcha" not in self.last_html.lower():
+                raise RuntimeError("GDT response did not contain lookup form/captcha")
+            self.last_error = None
+            logger.info("Requests-based GDT session initialized")
+            return True
+        except Exception as exc:
+            fallback_error = f"{type(exc).__name__}: {exc}"
+            if previous_error:
+                fallback_error = f"playwright={previous_error}; requests={fallback_error}"
+            self.last_error = fallback_error
+            logger.error("Failed to initialize requests fallback session: %s", self.last_error)
             return False
 
     def get_captcha(self, save_path: Optional[str] = None) -> bytes:
+        if self._use_requests_fallback:
+            return self._get_captcha_requests(save_path)
         captcha_img = self.page.locator('img[src*="captcha.png"]')
         captcha_img.wait_for(state="visible", timeout=15000)
         image_bytes = captcha_img.screenshot()
+        if save_path:
+            with open(save_path, "wb") as handle:
+                handle.write(image_bytes)
+        return image_bytes
+
+    def _get_captcha_requests(self, save_path: Optional[str] = None) -> bytes:
+        if not self._requests_session:
+            raise RuntimeError("Requests session is not initialized")
+        response = self._requests_session.get(
+            f"{BASE_URL}/tcnnt/captcha.png",
+            params={"uid": str(int(time.time() * 1000))},
+            timeout=(8, 20),
+        )
+        response.raise_for_status()
+        image_bytes = response.content
         if save_path:
             with open(save_path, "wb") as handle:
                 handle.write(image_bytes)
@@ -179,6 +254,8 @@ class GdtTaxLookupClientV2:
         return taxpayers
 
     def lookup_tax_id(self, tax_id: str, captcha: str, save_html_path: Optional[str] = "last_search_result.html") -> List[TaxPayerInfo]:
+        if self._use_requests_fallback:
+            return self._lookup_tax_id_requests(tax_id, captcha, save_html_path)
         if not tax_id or not captcha:
             raise ValueError("Tax ID and CAPTCHA are required")
         logger.info("Submitting lookup for MST: %s", tax_id)
@@ -192,6 +269,24 @@ class GdtTaxLookupClientV2:
                 handle.write(self.last_html)
         return self._parse_response_bs4(self.last_html)
 
+    def _lookup_tax_id_requests(self, tax_id: str, captcha: str, save_html_path: Optional[str] = "last_search_result.html") -> List[TaxPayerInfo]:
+        if not tax_id or not captcha:
+            raise ValueError("Tax ID and CAPTCHA are required")
+        if not self._requests_session:
+            raise RuntimeError("Requests session is not initialized")
+        logger.info("Submitting requests fallback lookup for MST: %s", tax_id)
+        response = self._requests_session.post(
+            TAX_LOOKUP_URL,
+            data={"cm": "cm", "mst": tax_id.strip(), "fullname": "", "address": "", "cmt": "", "captcha": captcha.strip()},
+            timeout=(8, 30),
+        )
+        response.raise_for_status()
+        self.last_html = _decode_response(response)
+        if save_html_path:
+            with open(save_html_path, "w", encoding="utf-8") as handle:
+                handle.write(self.last_html)
+        return self._parse_response_bs4(self.last_html)
+
     def close(self) -> None:
         if self.browser:
             self.browser.close()
@@ -199,4 +294,7 @@ class GdtTaxLookupClientV2:
         if self.pw:
             self.pw.stop()
             self.pw = None
+        if self._requests_session:
+            self._requests_session.close()
+            self._requests_session = None
         logger.info("GDT client closed")
