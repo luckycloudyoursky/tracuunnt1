@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import argparse
 import csv
-import importlib
 import logging
 import re
 import sys
@@ -28,6 +27,7 @@ NOT_FOUND_MARKERS = ("khong tim thay", "khong co thong tin")
 def normalize_text(value: str) -> str:
     text = unicodedata.normalize("NFD", value or "")
     text = "".join(char for char in text if unicodedata.category(char) != "Mn")
+    text = text.replace("đ", "d").replace("Đ", "D")
     text = re.sub(r"[^0-9A-Za-z]+", " ", text)
     return re.sub(r"\s+", " ", text).strip().lower()
 
@@ -38,9 +38,7 @@ def coerce_mst(value: object, numeric_from_excel: bool = False) -> Optional[str]
     if numeric_from_excel and isinstance(value, (int, float)):
         if isinstance(value, float) and not value.is_integer():
             return None
-        text = str(int(value))
-        if len(text) < 10:
-            text = text.zfill(10)
+        text = str(int(value)).zfill(10)
     else:
         text = str(value).strip().replace("\ufeff", "")
     match = MST_PATTERN.search(re.sub(r"[^\d-]", "", text))
@@ -85,7 +83,7 @@ def resolve_excel_column(sheet, column: Optional[str]) -> Optional[int]:
     if column.isdigit():
         index = int(column)
         if index <= 0:
-            raise ValueError("input column must be 1-based")
+            raise ValueError("--input-column must be a 1-based column index or header name")
         return index
     target = normalize_text(column)
     for cell in next(sheet.iter_rows(min_row=1, max_row=1), []):
@@ -118,13 +116,27 @@ def read_msts_from_file(path: Path, input_column: Optional[str]) -> List[str]:
     raise ValueError("Input file must be .txt, .csv, .xlsx, or .xlsm")
 
 
+def get_msts(args: argparse.Namespace) -> List[str]:
+    if args.input_file:
+        values = read_msts_from_file(Path(args.input_file), args.input_column)
+    elif len(args.inputs) == 1 and Path(args.inputs[0]).exists():
+        values = read_msts_from_file(Path(args.inputs[0]), args.input_column)
+    elif args.inputs:
+        values = [mst for item in args.inputs if (mst := coerce_mst(item))]
+    elif not sys.stdin.isatty():
+        values = [mst for line in sys.stdin for mst in [coerce_mst(line)] if mst]
+    else:
+        raise ValueError("Provide MST values or an input file")
+    if not args.keep_duplicates:
+        values = unique_keep_order(values)
+    if not values:
+        raise ValueError("No valid MST values found")
+    return values
+
+
 def load_gdt_client() -> Tuple[Any, str]:
     try:
-        import api_client_v2
-
-        api_client_v2 = importlib.reload(api_client_v2)
-        GdtTaxLookupClientV2 = api_client_v2.GdtTaxLookupClientV2
-        TAX_LOOKUP_URL = api_client_v2.TAX_LOOKUP_URL
+        from api_client_v2 import GdtTaxLookupClientV2, TAX_LOOKUP_URL
     except ImportError as exc:
         raise RuntimeError("Could not import api_client_v2") from exc
     return GdtTaxLookupClientV2, TAX_LOOKUP_URL or DEFAULT_GDT_SOURCE
@@ -151,7 +163,7 @@ def select_taxpayer(mst: str, taxpayers: List[Any]) -> Optional[Any]:
     return taxpayers[0]
 
 
-def taxpayer_to_result(input_mst: str, taxpayer: Any, count: int, source_url: str) -> Dict[str, str]:
+def taxpayer_to_result(input_mst: str, taxpayer: Any, source_url: str) -> Dict[str, str]:
     return {
         "input_mst": input_mst,
         "mst": getattr(taxpayer, "tax_id", input_mst),
@@ -163,7 +175,16 @@ def taxpayer_to_result(input_mst: str, taxpayer: Any, count: int, source_url: st
     }
 
 
-def lookup_mst_with_client(client: Any, mst: str, retries: int, source_url: str, save_html_dir: Optional[str] = None) -> Dict[str, str]:
+def save_html_path(save_html_dir: Optional[str], mst: str, attempt: int) -> Optional[str]:
+    if not save_html_dir:
+        return None
+    html_dir = Path(save_html_dir)
+    html_dir.mkdir(parents=True, exist_ok=True)
+    safe_mst = re.sub(r"[^0-9-]", "_", mst)
+    return str(html_dir / f"{safe_mst}_attempt_{attempt}.html")
+
+
+def lookup_mst_with_client(client: Any, mst: str, retries: int, source_url: str, save_html_dir: Optional[str]) -> Dict[str, str]:
     try:
         if not client.init_session():
             detail = getattr(client, "last_error", "") or ""
@@ -172,15 +193,16 @@ def lookup_mst_with_client(client: Any, mst: str, retries: int, source_url: str,
                 message = f"{message}: {detail}"
             return {"input_mst": mst, "mst": mst, "error": message, "source_url": source_url}
     except Exception as exc:
-        return {"input_mst": mst, "mst": mst, "error": f"Could not initialize GDT session: {type(exc).__name__}: {exc}", "source_url": source_url}
+        return {"input_mst": mst, "mst": mst, "error": f"Could not initialize GDT session: {exc}", "source_url": source_url}
+
     for attempt in range(1, retries + 1):
         try:
             captcha = client.auto_solve_captcha()
             print(f"  CAPTCHA attempt {attempt}/{retries}: {captcha}")
-            taxpayers = client.lookup_tax_id(mst, captcha, save_html_path=None)
+            taxpayers = client.lookup_tax_id(mst, captcha, save_html_path=save_html_path(save_html_dir, mst, attempt))
             selected = select_taxpayer(mst, taxpayers)
             if selected:
-                return taxpayer_to_result(mst, selected, len(taxpayers), source_url)
+                return taxpayer_to_result(mst, selected, source_url)
             html = getattr(client, "last_html", "")
             if html_has_marker(html, NOT_FOUND_MARKERS):
                 return {"input_mst": mst, "mst": mst, "error": "Not found", "source_url": source_url}
@@ -225,13 +247,56 @@ def write_excel(results: List[Dict[str, str]], output_path: Path) -> None:
     for row in sheet.iter_rows(min_row=2):
         for cell in row:
             cell.alignment = body_alignment
-    widths = {"A": 8, "B": 18, "C": 42, "D": 58, "E": 36, "F": 28}
-    for column, width in widths.items():
+    for column, width in {"A": 8, "B": 18, "C": 42, "D": 58, "E": 36, "F": 28}.items():
         sheet.column_dimensions[column].width = width
     sheet.freeze_panes = "A2"
     sheet.auto_filter.ref = sheet.dimensions
     workbook.save(output_path)
 
 
-def get_msts(args: argparse.Namespace) -> List[str]:
-    raise NotImplementedError("CLI input parsing is not used by the Streamlit app")
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Batch lookup Vietnamese tax IDs and export Excel results")
+    parser.add_argument("inputs", nargs="*", help="MST values or one .txt/.csv/.xlsx/.xlsm input file")
+    parser.add_argument("-i", "--input-file", help="Input file containing MST values")
+    parser.add_argument("--input-column", help="Excel column index or header name containing MST values")
+    parser.add_argument("-o", "--output", default="tra_cuu_thue_result.xlsx", help="Output Excel file")
+    parser.add_argument("--delay", type=float, default=1.0, help="Delay between MST lookups in seconds")
+    parser.add_argument("--retries", type=int, default=15, help="CAPTCHA retry count per MST")
+    parser.add_argument("--save-html-dir", help="Directory for debug HTML responses")
+    parser.add_argument("--debug", action="store_true", help="Enable detailed logging")
+    parser.add_argument("--keep-duplicates", action="store_true", help="Keep duplicate MST values")
+    return parser.parse_args()
+
+
+def main() -> int:
+    args = parse_args()
+    set_log_level(args.debug)
+    try:
+        msts = get_msts(args)
+        client_class, source_url = load_gdt_client()
+    except Exception as exc:
+        print(f"Input error: {exc}", file=sys.stderr)
+        return 2
+
+    results: List[Dict[str, str]] = []
+    total = len(msts)
+    with client_class() as client:
+        for index, mst in enumerate(msts, start=1):
+            print(f"[{index}/{total}] Looking up MST {mst}...")
+            result = lookup_mst_with_client(client, mst, args.retries, source_url, args.save_html_dir)
+            results.append(result)
+            if result.get("error"):
+                print(f"  -> ERROR: {result['error']}")
+            else:
+                print(f"  -> OK: {result.get('company_name', '')}")
+            if index < total and args.delay > 0:
+                time.sleep(args.delay)
+
+    output_path = Path(args.output)
+    write_excel(results, output_path)
+    print(f"Wrote Excel: {output_path.resolve()}")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

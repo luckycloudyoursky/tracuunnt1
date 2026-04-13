@@ -1,9 +1,0 @@
-streamlit
-requests
-openpyxl
-beautifulsoup4
-pillow
-playwright
-playwright-stealth
-ddddocr
-onnxruntime
