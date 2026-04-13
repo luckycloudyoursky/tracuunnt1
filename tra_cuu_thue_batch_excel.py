@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import importlib
 import logging
 import re
 import sys
@@ -119,7 +120,11 @@ def read_msts_from_file(path: Path, input_column: Optional[str]) -> List[str]:
 
 def load_gdt_client() -> Tuple[Any, str]:
     try:
-        from api_client_v2 import GdtTaxLookupClientV2, TAX_LOOKUP_URL
+        import api_client_v2
+
+        api_client_v2 = importlib.reload(api_client_v2)
+        GdtTaxLookupClientV2 = api_client_v2.GdtTaxLookupClientV2
+        TAX_LOOKUP_URL = api_client_v2.TAX_LOOKUP_URL
     except ImportError as exc:
         raise RuntimeError("Could not import api_client_v2") from exc
     return GdtTaxLookupClientV2, TAX_LOOKUP_URL or DEFAULT_GDT_SOURCE
