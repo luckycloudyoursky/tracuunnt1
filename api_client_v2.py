@@ -36,16 +36,9 @@ USER_AGENT = (
 
 def _resolve_chromium_executable() -> Optional[str]:
     candidates = [
-        os.environ.get("CHROME_BIN"),
-        os.environ.get("CHROMIUM_BIN"),
-        shutil.which("chromium"),
-        shutil.which("chromium-browser"),
-        shutil.which("google-chrome"),
-        shutil.which("google-chrome-stable"),
-        "/usr/bin/chromium",
-        "/usr/bin/chromium-browser",
-        "/usr/bin/google-chrome",
-        "/usr/bin/google-chrome-stable",
+        os.environ.get("CHROME_BIN"), os.environ.get("CHROMIUM_BIN"), shutil.which("chromium"),
+        shutil.which("chromium-browser"), shutil.which("google-chrome"), shutil.which("google-chrome-stable"),
+        "/usr/bin/chromium", "/usr/bin/chromium-browser", "/usr/bin/google-chrome", "/usr/bin/google-chrome-stable",
     ]
     for candidate in candidates:
         if candidate and os.path.exists(candidate):
@@ -58,11 +51,7 @@ def _install_playwright_chromium_once() -> None:
     if os.name == "nt" or os.path.exists(marker):
         return
     logger.info("Installing Playwright Chromium browser")
-    subprocess.run(
-        [sys.executable, "-m", "playwright", "install", "chromium"],
-        check=False,
-        timeout=180,
-    )
+    subprocess.run([sys.executable, "-m", "playwright", "install", "chromium"], check=False, timeout=180)
     try:
         with open(marker, "w", encoding="utf-8") as handle:
             handle.write("ok")
@@ -165,16 +154,14 @@ class GdtTaxLookupClientV2:
             if len(cols) < 6 or not cols[0].get_text(strip=True).isdigit():
                 continue
             tax_id = cols[1].get_text(strip=True)
-            taxpayers.append(
-                TaxPayerInfo(
-                    tax_id=tax_id,
-                    name=cols[2].get_text(separator=" ", strip=True),
-                    address=cols[3].get_text(separator=" ", strip=True),
-                    tax_office=cols[4].get_text(separator=" ", strip=True),
-                    status=cols[5].get_text(separator=" ", strip=True),
-                    branch_id=tax_id.split("-", 1)[1] if "-" in tax_id else None,
-                )
-            )
+            taxpayers.append(TaxPayerInfo(
+                tax_id=tax_id,
+                name=cols[2].get_text(separator=" ", strip=True),
+                address=cols[3].get_text(separator=" ", strip=True),
+                tax_office=cols[4].get_text(separator=" ", strip=True),
+                status=cols[5].get_text(separator=" ", strip=True),
+                branch_id=tax_id.split("-", 1)[1] if "-" in tax_id else None,
+            ))
         return taxpayers
 
     def lookup_tax_id(self, tax_id: str, captcha: str, save_html_path: Optional[str] = "last_search_result.html") -> List[TaxPayerInfo]:

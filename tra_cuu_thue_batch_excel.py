@@ -19,7 +19,6 @@ for stream in (sys.stdout, sys.stderr):
 
 MST_PATTERN = re.compile(r"\d{10}(?:-\d{3})?")
 DEFAULT_GDT_SOURCE = "https://tracuunnt.gdt.gov.vn/tcnnt/mstdn.jsp"
-
 OUTPUT_COLUMNS = ["STT", "MST", "Ten nguoi nop thue", "Dia chi", "Co quan thue quan ly", "Trang thai MST"]
 CAPTCHA_ERROR_MARKERS = ("nhap dung ma xac nhan", "ma xac nhan khong dung", "captcha khong dung")
 NOT_FOUND_MARKERS = ("khong tim thay", "khong co thong tin")
@@ -165,7 +164,6 @@ def lookup_mst_with_client(client: Any, mst: str, retries: int, source_url: str,
             return {"input_mst": mst, "mst": mst, "error": "Could not initialize GDT session", "source_url": source_url}
     except Exception as exc:
         return {"input_mst": mst, "mst": mst, "error": f"Could not initialize GDT session: {exc}", "source_url": source_url}
-
     for attempt in range(1, retries + 1):
         try:
             captcha = client.auto_solve_captcha()
